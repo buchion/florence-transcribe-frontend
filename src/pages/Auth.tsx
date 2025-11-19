@@ -41,6 +41,7 @@ export default function Auth() {
       await api.post('/api/auth/register', {
         email,
         password,
+        name: fullName,
       });
 
       // After successful registration, switch to sign in tab
