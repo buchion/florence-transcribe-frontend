@@ -10,6 +10,8 @@ import EHRExport from '../components/EHRExport';
 import type { TranscriptSegment, TranscriptUpdatePayload } from '../types/transcript';
 import { useSpeakerAllocator } from '../hooks/useSpeakerAllocator';
 import { createSegment, rebuildSegmentsFromText, transcriptToSegment } from '../utils/transcriptSegments';
+import patientsService from '../services/patients';
+import type { Patient } from '../types/patient';
 
 interface User {
   email: string;
@@ -25,8 +27,11 @@ export default function Session() {
   const [sessionId, setSessionId] = useState<number | undefined>(
     searchParams.get('id') ? parseInt(searchParams.get('id')!) : undefined
   );
-  const [patientId, setPatientId] = useState(searchParams.get('patient_id') || '');
-  const [patientName, setPatientName] = useState(searchParams.get('patient_name') || '');
+  const [selectedPatient, setSelectedPatient] = useState<Patient | null>(null);
+  const [patients, setPatients] = useState<Patient[]>([]);
+  const [loadingPatients, setLoadingPatients] = useState(false);
+  const [showPatientDetail, setShowPatientDetail] = useState(false);
+  const [isExistingSession, setIsExistingSession] = useState(false);
   const [segments, setSegments] = useState<TranscriptSegment[]>([]);
   const [interimSegment, setInterimSegment] = useState<TranscriptSegment | null>(null);
   const [clinicalData, setClinicalData] = useState<Record<string, unknown> | null>(null);
@@ -60,20 +65,97 @@ export default function Session() {
     fetchUser();
   }, [navigate]);
 
-  // Load existing transcripts when sessionId is present
+  // Fetch patients
   useEffect(() => {
-    const loadExistingTranscripts = async () => {
-      if (!sessionId) return;
-      
+    const fetchPatients = async () => {
       const isDemoMode = localStorage.getItem('demo_mode') === 'true';
       if (isDemoMode) {
-        // Skip loading in demo mode
+        // Skip fetching in demo mode
         return;
       }
 
+      setLoadingPatients(true);
       try {
-        const response = await api.get<{ transcripts: Array<{ id: number; text: string; speaker: string | null; isInterim: boolean; createdAt: string }> }>(`/api/transcripts/session/${sessionId}`);
-        const transcripts = response.data.transcripts || [];
+        const response = await patientsService.getPatients(0, 100);
+        setPatients(response.patients || []);
+        
+        // If patient_id is in URL params, try to find and select that patient
+        const urlPatientId = searchParams.get('patient_id');
+        if (urlPatientId) {
+          const patient = response.patients.find(
+            (p) => p.patientId === urlPatientId || p.id.toString() === urlPatientId
+          );
+          if (patient) {
+            setSelectedPatient(patient);
+          }
+        }
+      } catch (err) {
+        console.error('Failed to fetch patients:', err);
+        setError('Failed to load patients');
+      } finally {
+        setLoadingPatients(false);
+      }
+    };
+    fetchPatients();
+  }, [searchParams]);
+
+  // Load existing session and patient info when sessionId is present
+  useEffect(() => {
+    const loadExistingSession = async () => {
+      if (!sessionId) {
+        setIsExistingSession(false);
+        return;
+      }
+      
+      const isDemoMode = localStorage.getItem('demo_mode') === 'true';
+      if (isDemoMode) {
+        setIsExistingSession(false);
+        return;
+      }
+
+      setIsExistingSession(true);
+
+      try {
+        // Fetch session details to get patient info
+        interface SessionResponse {
+          sessions: Array<{
+            id: number;
+            patient_id?: string | null;
+            patient_entity_id?: number | null;
+            patient_name?: string | null;
+          }>;
+        }
+        const sessionResponse = await api.get<SessionResponse>(`/api/admin/sessions`, {
+          params: { limit: 1000 }
+        });
+        const sessions = sessionResponse.data.sessions || [];
+        const currentSession = sessions.find((s) => s.id === sessionId);
+        
+        if (currentSession && (currentSession.patient_id || currentSession.patient_entity_id)) {
+          // Try to fetch patient by patient_entity_id or patient_id
+          try {
+            // First try to get patient by patient_entity_id if available
+            if (currentSession.patient_entity_id) {
+              const patientResponse = await patientsService.getPatient(currentSession.patient_entity_id);
+              setSelectedPatient(patientResponse);
+            } else if (currentSession.patient_id) {
+              // Otherwise, search for patient by patient_id
+              const patientsResponse = await patientsService.getPatients(0, 100);
+              const patient = patientsResponse.patients.find(
+                (p) => p.patientId === currentSession.patient_id || p.id.toString() === currentSession.patient_id
+              );
+              if (patient) {
+                setSelectedPatient(patient);
+              }
+            }
+          } catch (err) {
+            console.error('Failed to fetch patient:', err);
+          }
+        }
+
+        // Load transcripts
+        const transcriptsResponse = await api.get<{ transcripts: Array<{ id: number; text: string; speaker: string | null; isInterim: boolean; createdAt: string }> }>(`/api/transcripts/session/${sessionId}`);
+        const transcripts = transcriptsResponse.data.transcripts || [];
         
         // Filter out interim transcripts and convert to segments
         const finalTranscripts = transcripts.filter((t) => !t.isInterim);
@@ -84,12 +166,12 @@ export default function Session() {
           setSegments(loadedSegments);
         }
       } catch (error) {
-        // Silently fail - session might not have transcripts yet
-        console.debug('Could not load existing transcripts:', error);
+        console.debug('Could not load existing session:', error);
+        setIsExistingSession(false);
       }
     };
 
-    loadExistingTranscripts();
+    loadExistingSession();
   }, [sessionId, assignSpeaker]);
 
   const handleLogout = () => {
@@ -134,6 +216,12 @@ export default function Session() {
 
   const startRecording = async () => {
     try {
+      // Validate patient selection
+      if (!selectedPatient) {
+        setError('Please select a patient before starting the session');
+        return;
+      }
+
       const token = localStorage.getItem('access_token');
       if (!token) {
         setError('Not authenticated');
@@ -143,8 +231,13 @@ export default function Session() {
       // Build query parameters object
       const queryParams: Record<string, string> = {};
       if (sessionId) queryParams.session_id = sessionId.toString();
-      if (patientId) queryParams.patient_id = patientId;
-      if (patientName) queryParams.patient_name = patientName;
+      if (selectedPatient.patientId) {
+        queryParams.patient_id = selectedPatient.patientId;
+      } else {
+        queryParams.patient_id = selectedPatient.id.toString();
+      }
+      queryParams.patient_name = `${selectedPatient.firstName} ${selectedPatient.lastName}`;
+      queryParams.patient_entity_id = selectedPatient.id.toString();
       
       // Create WebSocket client with base URL, token, and query params
       // The client will construct: ws://localhost:8000/api/realtime/ws?token=...&patient_id=...&patient_name=...
@@ -250,10 +343,19 @@ export default function Session() {
   const handleClinicalize = async () => {
     if (!transcriptText) return;
     try {
-      const response = await api.post('/api/clinicalize', {
+      // Only send session_id if we don't have transcript_text
+      // This prevents 404 errors when transcripts haven't been saved to DB yet
+      const requestBody: { transcript_text: string; session_id?: number } = {
         transcript_text: transcriptText,
-        session_id: sessionId,
-      });
+      };
+      
+      // Only include session_id if we have one, but prioritize transcript_text
+      // The backend will use transcript_text if provided, so session_id is just for reference
+      if (sessionId) {
+        requestBody.session_id = sessionId;
+      }
+      
+      const response = await api.post('/api/clinicalize', requestBody);
       setClinicalData(response.data);
       setActiveTab('clinical');
     } catch (error) {
@@ -322,30 +424,72 @@ export default function Session() {
         <div className="px-4 py-6 sm:px-0">
           {/* Patient Info & Controls */}
           <div className="bg-white p-6 rounded-lg shadow-lg mb-6" style={{ border: '2px solid #42D7D7' }}>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Patient ID</label>
-                <input
-                  type="text"
-                  value={patientId}
-                  onChange={(e) => setPatientId(e.target.value)}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-[#42D7D7] focus:border-[#42D7D7]"
-                  placeholder="Enter patient ID"
-                  disabled={isRecording}
-                />
+            {isExistingSession && selectedPatient ? (
+              // Show patient name and View More button for existing sessions
+              <div className="mb-6">
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Patient
+                </label>
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center">
+                    <span className="text-lg font-semibold text-gray-800">
+                      {selectedPatient.firstName} {selectedPatient.lastName}
+                    </span>
+                    {selectedPatient.patientId && (
+                      <span className="ml-2 text-sm text-gray-500">
+                        (ID: {selectedPatient.patientId})
+                      </span>
+                    )}
+                  </div>
+                  <button
+                    onClick={() => setShowPatientDetail(true)}
+                    className="px-4 py-2 rounded-md text-sm font-medium transition-colors border"
+                    style={{ borderColor: '#42D7D7', color: '#42D7D7' }}
+                    onMouseEnter={(e) => {
+                      e.currentTarget.style.backgroundColor = '#42D7D7';
+                      e.currentTarget.style.color = 'white';
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.backgroundColor = 'transparent';
+                      e.currentTarget.style.color = '#42D7D7';
+                    }}
+                  >
+                    View More
+                  </button>
+                </div>
               </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Patient Name</label>
-                <input
-                  type="text"
-                  value={patientName}
-                  onChange={(e) => setPatientName(e.target.value)}
+            ) : (
+              // Show dropdown for new sessions
+              <div className="mb-6">
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Select Patient <span className="text-red-500">*</span>
+                </label>
+                <select
+                  value={selectedPatient?.id || ''}
+                  onChange={(e) => {
+                    const patient = patients.find((p) => p.id === parseInt(e.target.value));
+                    if (patient) {
+                      setSelectedPatient(patient);
+                      setError(''); // Clear any previous errors
+                    }
+                  }}
                   className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-[#42D7D7] focus:border-[#42D7D7]"
-                  placeholder="Enter patient name"
-                  disabled={isRecording}
-                />
+                  disabled={isRecording || loadingPatients}
+                  required
+                >
+                  <option value="">-- Select a patient --</option>
+                  {patients.map((patient) => (
+                    <option key={patient.id} value={patient.id}>
+                      {patient.firstName} {patient.lastName}
+                      {patient.patientId ? ` (ID: ${patient.patientId})` : ` (ID: ${patient.id})`}
+                    </option>
+                  ))}
+                </select>
+                {loadingPatients && (
+                  <p className="mt-1 text-sm text-gray-500">Loading patients...</p>
+                )}
               </div>
-            </div>
+            )}
 
             <div className="flex items-center justify-between">
               <div className="flex items-center space-x-4">
@@ -381,6 +525,7 @@ export default function Session() {
                       setClinicalData(null);
                       setSoapNote(null);
                       setSessionId(undefined);
+                      setSelectedPatient(null);
                       setActiveTab('transcription');
                     }}
                     className="px-4 py-2 rounded-md text-sm font-medium transition-colors border"
@@ -397,6 +542,116 @@ export default function Session() {
               )}
             </div>
           </div>
+
+          {/* Patient Detail Modal */}
+          {showPatientDetail && selectedPatient && (
+            <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+              <div className="bg-white rounded-lg p-6 max-w-4xl max-h-[90vh] overflow-y-auto w-full mx-4">
+                <div className="flex justify-between items-center mb-4">
+                  <h3 className="text-xl font-bold" style={{ color: '#42D7D7' }}>
+                    {selectedPatient.firstName} {selectedPatient.lastName}
+                  </h3>
+                  <button
+                    onClick={() => setShowPatientDetail(false)}
+                    className="text-gray-500 hover:text-gray-700 text-2xl"
+                  >
+                    ✕
+                  </button>
+                </div>
+                
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+                  <div>
+                    <p className="text-sm text-gray-600"><strong>Phone:</strong></p>
+                    <p className="text-gray-800">{selectedPatient.phoneNumber}</p>
+                  </div>
+                  {selectedPatient.email && (
+                    <div>
+                      <p className="text-sm text-gray-600"><strong>Email:</strong></p>
+                      <p className="text-gray-800">{selectedPatient.email}</p>
+                    </div>
+                  )}
+                  {selectedPatient.dateOfBirth && (
+                    <div>
+                      <p className="text-sm text-gray-600"><strong>Date of Birth:</strong></p>
+                      <p className="text-gray-800">{new Date(selectedPatient.dateOfBirth).toLocaleDateString()}</p>
+                    </div>
+                  )}
+                  {selectedPatient.gender && (
+                    <div>
+                      <p className="text-sm text-gray-600"><strong>Gender:</strong></p>
+                      <p className="text-gray-800">{selectedPatient.gender}</p>
+                    </div>
+                  )}
+                  {selectedPatient.patientId && (
+                    <div>
+                      <p className="text-sm text-gray-600"><strong>Patient ID:</strong></p>
+                      <p className="text-gray-800">{selectedPatient.patientId}</p>
+                    </div>
+                  )}
+                  {selectedPatient.nationalId && (
+                    <div>
+                      <p className="text-sm text-gray-600"><strong>National ID:</strong></p>
+                      <p className="text-gray-800">{selectedPatient.nationalId}</p>
+                    </div>
+                  )}
+                </div>
+
+                {selectedPatient.address && (
+                  <div className="mb-4">
+                    <p className="text-sm text-gray-600"><strong>Address:</strong></p>
+                    <p className="text-gray-800">{selectedPatient.address}</p>
+                  </div>
+                )}
+
+                {selectedPatient.allergies && (
+                  <div className="mb-4">
+                    <p className="text-sm text-gray-600"><strong>Allergies:</strong></p>
+                    <p className="text-gray-800">{selectedPatient.allergies}</p>
+                  </div>
+                )}
+
+                {selectedPatient.currentMedications && (
+                  <div className="mb-4">
+                    <p className="text-sm text-gray-600"><strong>Current Medications:</strong></p>
+                    <p className="text-gray-800">{selectedPatient.currentMedications}</p>
+                  </div>
+                )}
+
+                {selectedPatient.pastMedicalHistory && (
+                  <div className="mb-4">
+                    <p className="text-sm text-gray-600"><strong>Past Medical History:</strong></p>
+                    <p className="text-gray-800 whitespace-pre-wrap">{selectedPatient.pastMedicalHistory}</p>
+                  </div>
+                )}
+
+                {selectedPatient.familyMedicalHistory && (
+                  <div className="mb-4">
+                    <p className="text-sm text-gray-600"><strong>Family Medical History:</strong></p>
+                    <p className="text-gray-800 whitespace-pre-wrap">{selectedPatient.familyMedicalHistory}</p>
+                  </div>
+                )}
+
+                {selectedPatient.pastSurgeries && (
+                  <div className="mb-4">
+                    <p className="text-sm text-gray-600"><strong>Past Surgeries:</strong></p>
+                    <p className="text-gray-800 whitespace-pre-wrap">{selectedPatient.pastSurgeries}</p>
+                  </div>
+                )}
+
+                <div className="mt-6 flex justify-end">
+                  <button
+                    onClick={() => setShowPatientDetail(false)}
+                    className="px-6 py-2 rounded-md text-white font-medium"
+                    style={{ backgroundColor: '#42D7D7' }}
+                    onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#3BC5C5'}
+                    onMouseLeave={(e) => e.currentTarget.style.backgroundColor = '#42D7D7'}
+                  >
+                    Close
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* Main Workspace */}
           <div className="bg-white rounded-lg shadow-lg overflow-hidden" style={{ border: '2px solid #42D7D7' }}>
