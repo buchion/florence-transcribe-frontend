@@ -1,21 +1,30 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import TranscriptFeed from './TranscriptFeed';
+import type { TranscriptSegment } from '../types/transcript';
 
 interface TranscriptionViewProps {
-  transcript: string;
-  interimTranscript: string;
+  segments: TranscriptSegment[];
+  interimSegment: TranscriptSegment | null;
+  editableText: string;
+  onTranscriptEdit: (text: string) => void;
   onClinicalize: () => void;
 }
 
 export default function TranscriptionView({
-  transcript,
-  interimTranscript,
+  segments,
+  interimSegment,
+  editableText,
+  onTranscriptEdit,
   onClinicalize,
 }: TranscriptionViewProps) {
   const [isEditing, setIsEditing] = useState(false);
-  const [editedTranscript, setEditedTranscript] = useState(transcript);
+  const [editedTranscript, setEditedTranscript] = useState(editableText);
 
-  const displayText = isEditing ? editedTranscript : transcript;
-  const fullText = displayText + (interimTranscript ? ` ${interimTranscript}` : '');
+  useEffect(() => {
+    if (!isEditing) {
+      setEditedTranscript(editableText);
+    }
+  }, [editableText, isEditing]);
 
   return (
     <div>
@@ -23,12 +32,7 @@ export default function TranscriptionView({
         <h3 className="text-lg font-semibold">Transcription</h3>
         <div className="space-x-2">
           <button
-            onClick={() => {
-              setIsEditing(!isEditing);
-              if (!isEditing) {
-                setEditedTranscript(transcript);
-              }
-            }}
+            onClick={() => setIsEditing((prev) => !prev)}
             className="px-4 py-2 border border-gray-300 rounded-md hover:bg-gray-50"
           >
             {isEditing ? 'Cancel' : 'Edit'}
@@ -36,7 +40,7 @@ export default function TranscriptionView({
           {isEditing && (
             <button
               onClick={() => {
-                // Save edited transcript
+                onTranscriptEdit(editedTranscript);
                 setIsEditing(false);
               }}
               className="px-4 py-2 bg-indigo-600 text-white rounded-md hover:bg-indigo-700"
@@ -46,7 +50,7 @@ export default function TranscriptionView({
           )}
           <button
             onClick={onClinicalize}
-            disabled={!transcript.trim()}
+            disabled={!segments.length}
             className="px-4 py-2 bg-indigo-600 text-white rounded-md hover:bg-indigo-700 disabled:opacity-50"
           >
             Extract Clinical Data
@@ -61,14 +65,7 @@ export default function TranscriptionView({
             className="w-full h-full min-h-[400px] p-2 border-none bg-transparent focus:outline-none"
           />
         ) : (
-          <div className="whitespace-pre-wrap">
-            {fullText || (
-              <span className="text-gray-400">Transcription will appear here...</span>
-            )}
-            {interimTranscript && (
-              <span className="text-gray-500 italic">{interimTranscript}</span>
-            )}
-          </div>
+          <TranscriptFeed segments={segments} interimSegment={interimSegment} />
         )}
       </div>
     </div>

@@ -1,136 +1,116 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import api from '../services/api';
-import { AudioRecorder } from '../services/audio';
-import { WebSocketClient } from '../services/websocket';
 
 interface User {
   email: string;
+  id?: number;
+}
+
+interface Session {
+  id: number;
+  user_id: number;
+  user_email: string;
+  patient_id: string | null;
+  patient_name: string | null;
+  status: string;
+  started_at: string | null;
+  ended_at: string | null;
+  created_at: string | null;
 }
 
 export default function Dashboard() {
   const [user, setUser] = useState<User | null>(null);
-  const [isRecording, setIsRecording] = useState(false);
-  const [transcript, setTranscript] = useState('');
-  const [interimTranscript, setInterimTranscript] = useState('');
+  const [sessions, setSessions] = useState<Session[]>([]);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  
   const navigate = useNavigate();
-  const audioRecorderRef = useRef<AudioRecorder | null>(null);
-  const wsClientRef = useRef<WebSocketClient | null>(null);
 
-  const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
-  const WS_URL = API_BASE_URL.replace('http', 'ws') + '/api/realtime/ws';
-
+  // Auth Check & Fetch Sessions
   useEffect(() => {
-    const fetchUser = async () => {
-      // Check if in demo mode
+    const fetchData = async () => {
       const isDemoMode = localStorage.getItem('demo_mode') === 'true';
       if (isDemoMode) {
         setUser({ email: 'demo@florence.ai' });
+        setLoading(false);
         return;
       }
 
       try {
-        const response = await api.get('/api/auth/me');
-        setUser(response.data);
-      } catch {
-        navigate('/auth');
+        const userResponse = await api.get('/api/auth/me');
+        setUser(userResponse.data);
+        
+        // Fetch sessions for current user
+        const sessionsResponse = await api.get('/api/admin/sessions', {
+          params: {
+            user_id: userResponse.data.id,
+            limit: 100
+          }
+        });
+        setSessions(sessionsResponse.data.sessions || []);
+      } catch (err: unknown) {
+        if (err && typeof err === 'object' && 'response' in err) {
+          const axiosError = err as { response?: { status?: number } };
+          if (axiosError.response?.status === 401) {
+            navigate('/auth');
+          } else {
+            setError('Failed to load sessions');
+          }
+        } else {
+          setError('Failed to load sessions');
+        }
+      } finally {
+        setLoading(false);
       }
     };
-    fetchUser();
+    fetchData();
   }, [navigate]);
 
   const handleLogout = () => {
-    stopRecording();
     localStorage.removeItem('access_token');
     localStorage.removeItem('refresh_token');
     localStorage.removeItem('demo_mode');
     navigate('/auth');
   };
 
-  const startRecording = async () => {
-    try {
-      const token = localStorage.getItem('access_token');
-      if (!token) {
-        setError('Not authenticated');
-        return;
-      }
-
-      // Create WebSocket connection
-      wsClientRef.current = new WebSocketClient(WS_URL, token);
-
-      wsClientRef.current.connect(
-        (data) => {
-          if (data.type === 'session_started') {
-            // Session started successfully
-            console.log('Session started:', data.session_id);
-          } else if (data.type === 'interim_transcript') {
-            setInterimTranscript(data.text);
-          } else if (data.type === 'final_transcript') {
-            setTranscript((prev) => prev + ' ' + data.text);
-            setInterimTranscript('');
-          } else if (data.type === 'error') {
-            setError(data.message || 'An error occurred');
-            setIsRecording(false);
-            stopRecording();
-          }
-        },
-        (error) => {
-          console.error('WebSocket error:', error);
-          setError('Connection error. Please check your backend server and AssemblyAI API key.');
-          setIsRecording(false);
-        },
-        () => {
-          setIsRecording(false);
-        }
-      );
-
-      // Start audio recording
-      audioRecorderRef.current = new AudioRecorder();
-      await audioRecorderRef.current.startRecording((audioData) => {
-        if (wsClientRef.current) {
-          wsClientRef.current.send(audioData);
-        }
-      });
-
-      setIsRecording(true);
-      setError('');
-    } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : 'Failed to start recording';
-      setError(errorMessage);
-      setIsRecording(false);
-    }
+  const handleNewSession = () => {
+    navigate('/session');
   };
 
-  const stopRecording = () => {
-    if (audioRecorderRef.current) {
-      audioRecorderRef.current.stopRecording();
-      audioRecorderRef.current = null;
-    }
-    if (wsClientRef.current) {
-      wsClientRef.current.close();
-      wsClientRef.current = null;
-    }
-    setIsRecording(false);
+  const handleViewSession = (sessionId: number) => {
+    navigate(`/session?id=${sessionId}`);
   };
 
-  useEffect(() => {
-    return () => {
-      stopRecording();
-    };
-  }, []);
+  const formatDate = (dateString: string | null) => {
+    if (!dateString) return 'N/A';
+    const date = new Date(dateString);
+    return date.toLocaleString();
+  };
+
+  const getStatusBadge = (status: string) => {
+    const baseClasses = "px-2 py-1 rounded-full text-xs font-medium";
+    switch (status.toLowerCase()) {
+      case 'active':
+        return `${baseClasses} bg-green-100 text-green-800`;
+      case 'ended':
+        return `${baseClasses} bg-gray-100 text-gray-800`;
+      case 'cancelled':
+        return `${baseClasses} bg-red-100 text-red-800`;
+      default:
+        return `${baseClasses} bg-gray-100 text-gray-800`;
+    }
+  };
 
   return (
     <div className="min-h-screen" style={{ backgroundColor: '#F0FDFF' }}>
       <nav className="bg-white shadow" style={{ borderBottom: '2px solid #42D7D7' }}>
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex justify-between h-16">
-            <div className="flex">
-              <div className="flex-shrink-0 flex items-center">
-                <h1 className="text-xl font-bold" style={{ color: '#42D7D7' }}>
-                  Florence Transcribe
-                </h1>
-              </div>
+            <div className="flex items-center">
+              <h1 className="text-xl font-bold" style={{ color: '#42D7D7' }}>
+                Florence Transcribe
+              </h1>
             </div>
             <div className="flex items-center">
               <span className="mr-4" style={{ color: '#42D7D7' }}>{user?.email}</span>
@@ -150,152 +130,159 @@ export default function Dashboard() {
 
       <main className="max-w-7xl mx-auto py-6 sm:px-6 lg:px-8">
         <div className="px-4 py-6 sm:px-0">
-          <div className="mb-8">
-            <h2 className="text-3xl font-bold mb-2" style={{ color: '#42D7D7' }}>
-              Welcome to Florence Transcribe
-            </h2>
-            <p className="text-gray-600">
-              Start recording to begin transcribing with Assembly AI.
-            </p>
-          </div>
+          {/* Header */}
+          <div className="mb-6 flex justify-between items-center">
+              <div>
+              <h2 className="text-2xl font-bold text-gray-900">Sessions Overview</h2>
+              <p className="text-gray-600 mt-1">Manage and view all your transcription sessions</p>
+            </div>
+                  <button
+              onClick={handleNewSession}
+              className="px-6 py-3 rounded-lg text-white font-medium flex items-center transition-all transform hover:scale-105 shadow-lg"
+                    style={{ backgroundColor: '#42D7D7' }}
+                    onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#3BC5C5'}
+                    onMouseLeave={(e) => e.currentTarget.style.backgroundColor = '#42D7D7'}
+                  >
+              <span className="mr-2">+</span>
+                    New Session
+                  </button>
+              </div>
 
-          {/* Recording Controls */}
-          <div className="bg-white p-6 rounded-lg shadow-lg mb-6" style={{ border: '2px solid #42D7D7' }}>
-            <div className="flex items-center justify-between mb-4">
-              <h3 className="text-lg font-semibold" style={{ color: '#42D7D7' }}>
-                Recording Session
-              </h3>
+          {/* Error Message */}
               {error && (
-                <div className="text-red-600 text-sm bg-red-50 px-3 py-1 rounded">
+            <div className="mb-6 bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded">
                   {error}
                 </div>
               )}
-              {isRecording && (
-                <div className="flex items-center">
-                  <span className="w-3 h-3 rounded-full mr-2 animate-pulse" style={{ backgroundColor: '#42D7D7' }}></span>
-                  <span className="text-sm" style={{ color: '#42D7D7' }}>Recording...</span>
-                </div>
-              )}
-            </div>
-            <div className="flex items-center space-x-4">
-              {!isRecording ? (
-                <button
-                  onClick={startRecording}
-                  className="px-8 py-3 rounded-lg text-white font-medium flex items-center transition-all transform hover:scale-105 shadow-lg"
-                  style={{ backgroundColor: '#42D7D7' }}
-                  onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#3BC5C5'}
-                  onMouseLeave={(e) => e.currentTarget.style.backgroundColor = '#42D7D7'}
-                >
-                  <svg className="w-5 h-5 mr-2" fill="currentColor" viewBox="0 0 20 20">
-                    <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" clipRule="evenodd" />
-                  </svg>
-                  Start Recording
-                </button>
-              ) : (
-                <button
-                  onClick={stopRecording}
-                  className="px-8 py-3 rounded-lg text-white font-medium flex items-center transition-all transform hover:scale-105 shadow-lg"
-                  style={{ backgroundColor: '#FF6B6B' }}
-                  onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#FF5252'}
-                  onMouseLeave={(e) => e.currentTarget.style.backgroundColor = '#FF6B6B'}
-                >
-                  <span className="w-3 h-3 bg-white rounded-full mr-2 animate-pulse"></span>
-                  Stop Recording
-                </button>
-              )}
-              <button
-                onClick={() => navigate('/session')}
-                className="px-6 py-3 rounded-lg font-medium transition-colors border-2"
-                style={{ 
-                  borderColor: '#42D7D7',
-                  color: '#42D7D7',
-                  backgroundColor: 'transparent'
-                }}
-                onMouseEnter={(e) => {
-                  e.currentTarget.style.backgroundColor = '#42D7D7';
-                  e.currentTarget.style.color = 'white';
-                }}
-                onMouseLeave={(e) => {
-                  e.currentTarget.style.backgroundColor = 'transparent';
-                  e.currentTarget.style.color = '#42D7D7';
-                }}
-              >
-                Advanced Session
-              </button>
-            </div>
-          </div>
 
-          {/* Transcription Section */}
-          <div className="bg-white p-6 rounded-lg shadow-lg" style={{ border: '2px solid #42D7D7' }}>
-            <div className="flex justify-between items-center mb-4">
-              <h3 className="text-lg font-semibold" style={{ color: '#42D7D7' }}>
-                Transcribe
-              </h3>
-              {transcript && (
-                <button
-                  onClick={() => {
-                    setTranscript('');
-                    setInterimTranscript('');
-                  }}
-                  className="px-4 py-2 rounded-md text-sm font-medium transition-colors"
-                  style={{ 
-                    borderColor: '#42D7D7',
-                    color: '#42D7D7',
-                    border: '1px solid',
-                    backgroundColor: 'transparent'
-                  }}
-                  onMouseEnter={(e) => {
-                    e.currentTarget.style.backgroundColor = '#42D7D7';
-                    e.currentTarget.style.color = 'white';
-                  }}
-                  onMouseLeave={(e) => {
-                    e.currentTarget.style.backgroundColor = 'transparent';
-                    e.currentTarget.style.color = '#42D7D7';
-                  }}
-                >
-                  Clear
-                </button>
-              )}
+          {/* Sessions List */}
+          {loading ? (
+            <div className="bg-white rounded-lg shadow-lg p-12 text-center">
+              <div className="text-gray-500">Loading sessions...</div>
             </div>
-            <div 
-              className="rounded-md p-6 min-h-[400px] overflow-y-auto"
-              style={{ 
-                border: '2px solid #E0F7FA',
-                backgroundColor: '#FAFEFF'
-              }}
-            >
-              {transcript || interimTranscript ? (
-                <div className="whitespace-pre-wrap text-gray-800 leading-relaxed">
-                  <span>{transcript}</span>
-                  {interimTranscript && (
-                    <span className="italic opacity-70" style={{ color: '#42D7D7' }}>
-                      {interimTranscript}
-                    </span>
-                  )}
-                </div>
-              ) : (
-                <div className="flex items-center justify-center h-full">
-                  <div className="text-center">
-                    <svg 
-                      className="w-16 h-16 mx-auto mb-4 opacity-30" 
-                      fill="none" 
-                      stroke="currentColor" 
-                      viewBox="0 0 24 24"
-                      style={{ color: '#42D7D7' }}
-                    >
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
-                    </svg>
-                    <p className="text-gray-400" style={{ color: '#42D7D7' }}>
-                      Transcription will appear here when you start recording...
-                    </p>
+          ) : sessions.length === 0 ? (
+            <div className="bg-white rounded-lg shadow-lg p-12 text-center" style={{ border: '2px solid #42D7D7' }}>
+              <div className="text-gray-500 mb-4">No sessions found</div>
+                  <button
+                onClick={handleNewSession}
+                className="px-6 py-2 rounded-md text-white font-medium"
+                style={{ backgroundColor: '#42D7D7' }}
+              >
+                Start Your First Session
+                  </button>
+            </div>
+          ) : (
+            <div className="bg-white rounded-lg shadow-lg overflow-hidden" style={{ border: '2px solid #42D7D7' }}>
+              <div className="overflow-x-auto">
+                <table className="min-w-full divide-y divide-gray-200">
+                  <thead className="bg-gray-50">
+                    <tr>
+                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        Session ID
+                      </th>
+                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        Patient
+                      </th>
+                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        Status
+                      </th>
+                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        Started
+                      </th>
+                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        Ended
+                      </th>
+                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        Duration
+                      </th>
+                      <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        Actions
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody className="bg-white divide-y divide-gray-200">
+                    {sessions.map((session) => {
+                      const startTime = session.started_at ? new Date(session.started_at) : null;
+                      const endTime = session.ended_at ? new Date(session.ended_at) : null;
+                      const duration = startTime && endTime 
+                        ? Math.round((endTime.getTime() - startTime.getTime()) / 1000 / 60)
+                        : null;
+
+                      return (
+                        <tr key={session.id} className="hover:bg-gray-50">
+                          <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
+                            #{session.id}
+                          </td>
+                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                            <div>
+                              {session.patient_name ? (
+                                <>
+                                  <div className="font-medium">{session.patient_name}</div>
+                                  {session.patient_id && (
+                                    <div className="text-gray-500 text-xs">ID: {session.patient_id}</div>
+                                  )}
+                                </>
+                              ) : (
+                                <span className="text-gray-400">No patient info</span>
+                              )}
+                            </div>
+                          </td>
+                          <td className="px-6 py-4 whitespace-nowrap">
+                            <span className={getStatusBadge(session.status)}>
+                              {session.status}
+                            </span>
+                          </td>
+                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                            {formatDate(session.started_at)}
+                          </td>
+                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                            {formatDate(session.ended_at)}
+                          </td>
+                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                            {duration !== null ? `${duration} min` : '-'}
+                          </td>
+                          <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+                            <button
+                              onClick={() => handleViewSession(session.id)}
+                              className="text-[#42D7D7] hover:text-[#3BC5C5] transition-colors"
+                            >
+                              View →
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
                   </div>
+          )}
+
+          {/* Stats Summary */}
+          {sessions.length > 0 && (
+            <div className="mt-6 grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div className="bg-white rounded-lg shadow-lg p-6" style={{ border: '2px solid #42D7D7' }}>
+                <div className="text-sm text-gray-600">Total Sessions</div>
+                <div className="text-2xl font-bold mt-2" style={{ color: '#42D7D7' }}>
+                  {sessions.length}
                 </div>
-              )}
+              </div>
+              <div className="bg-white rounded-lg shadow-lg p-6" style={{ border: '2px solid #42D7D7' }}>
+                <div className="text-sm text-gray-600">Active Sessions</div>
+                <div className="text-2xl font-bold mt-2" style={{ color: '#42D7D7' }}>
+                  {sessions.filter(s => s.status.toLowerCase() === 'active').length}
+                </div>
+              </div>
+              <div className="bg-white rounded-lg shadow-lg p-6" style={{ border: '2px solid #42D7D7' }}>
+                <div className="text-sm text-gray-600">Completed Sessions</div>
+                <div className="text-2xl font-bold mt-2" style={{ color: '#42D7D7' }}>
+                  {sessions.filter(s => s.status.toLowerCase() === 'ended').length}
+                  </div>
+                  </div>
             </div>
-          </div>
+          )}
         </div>
       </main>
     </div>
   );
 }
-

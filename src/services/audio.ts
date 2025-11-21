@@ -26,6 +26,7 @@ export class AudioRecorder {
       processor.onaudioprocess = (e) => {
         const inputData = e.inputBuffer.getChannelData(0);
         const pcm16 = this.convertFloat32ToPCM16(inputData);
+        // console.log(`Audio: Processed ${pcm16.length} samples`);
         onAudioData(pcm16.buffer as ArrayBuffer);
       };
 
