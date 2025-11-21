@@ -10,10 +10,39 @@ async function bootstrap() {
   // Use WebSocket adapter (ws) instead of Socket.IO
   app.useWebSocketAdapter(new WsAdapter(app));
   
-  // Enable CORS
+  // Enable CORS - Allow multiple origins for development and production
+  const allowedOrigins = [
+    'https://florenceai.netlify.app',
+    'http://localhost:5173',
+    'http://localhost:3000',
+  ];
+  
+  // Add FRONTEND_URL from environment if provided
+  if (process.env.FRONTEND_URL) {
+    allowedOrigins.push(process.env.FRONTEND_URL);
+  }
+
   app.enableCors({
-    origin: process.env.FRONTEND_URL || 'http://localhost:5173',
+    origin: (origin, callback) => {
+      // Allow requests with no origin (like mobile apps or curl requests)
+      if (!origin) return callback(null, true);
+      
+      // Check if origin is in allowed list
+      if (allowedOrigins.includes(origin)) {
+        callback(null, true);
+      } else {
+        // In development, allow localhost with any port
+        if (process.env.NODE_ENV !== 'production' && origin.startsWith('http://localhost:')) {
+          callback(null, true);
+        } else {
+          callback(new Error('Not allowed by CORS'));
+        }
+      }
+    },
     credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'Accept'],
+    exposedHeaders: ['Content-Type', 'Authorization'],
   });
   
   // Global validation pipe
