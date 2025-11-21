@@ -23,15 +23,21 @@ export class ClinicalController {
   @UseGuards(JwtAuthGuard)
   @HttpCode(200)
   async clinicalize(@Body() dto: ClinicalizeDto) {
+    
     let transcriptText: string;
 
-    if (dto.transcript_text) {
+    // Prioritize transcript_text if provided (even if session_id is also provided )
+    // This handles the case where transcripts haven't been saved to DB yet
+    if (dto.transcript_text ) {
+      console.log("transcript_text is provided");
       transcriptText = dto.transcript_text;
     } else if (dto.session_id) {
+      console.log("session_id is provided");
       transcriptText = await this.transcriptsService.getFullTranscript(
         dto.session_id,
       );
-      if (!transcriptText) {
+      if (transcriptText.length < 1) {
+        console.log("transcript_text is not found");
         throw new NotFoundException('Transcript not found');
       }
     } else {

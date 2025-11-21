@@ -100,8 +100,9 @@ export class RealtimeGateway
       const sessionId = url.searchParams.get('session_id');
       const patientId = url.searchParams.get('patient_id');
       const patientName = url.searchParams.get('patient_name');
+      const patientEntityId = url.searchParams.get('patient_entity_id');
 
-      this.logger.debug(`[WS] ${clientId} - Query params: session_id=${sessionId}, patient_id=${patientId}, patient_name=${patientName}`);
+      this.logger.debug(`[WS] ${clientId} - Query params: session_id=${sessionId}, patient_id=${patientId}, patient_name=${patientName}, patient_entity_id=${patientEntityId}`);
 
       // Get or create session
       let session;
@@ -114,12 +115,19 @@ export class RealtimeGateway
         }
         this.logger.log(`[WS] ${clientId} - Resuming existing session ${session.id}`);
       } else {
-        session = await this.sessionsService.create({
+        const sessionData: any = {
           userId,
           patientId: patientId || null,
           patientName: patientName || null,
           status: SessionStatus.ACTIVE,
-        });
+        };
+        
+        // Add patientEntityId if provided
+        if (patientEntityId) {
+          sessionData.patientEntityId = parseInt(patientEntityId);
+        }
+        
+        session = await this.sessionsService.create(sessionData);
         this.logger.log(`[WS] ${clientId} - Created new session ${session.id} for user ${userId}`);
       }
 

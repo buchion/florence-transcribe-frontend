@@ -22,7 +22,7 @@ export class ClinicalExtraction {
   @JoinColumn({ name: 'transcript_id' })
   transcript: Transcript;
 
-  @Column({ name: 'json_data', type: 'jsonb' })
+  @Column({ name: 'json_data', type: 'jsonb', nullable: true })
   jsonData: {
     problems?: Array<{
       description: string;

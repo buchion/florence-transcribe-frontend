@@ -160,7 +160,7 @@ Generate a complete, professional SOAP note in HTML format with inline styles.`;
       // Save to database
       console.log('[SOAP Service] Creating SOAP note entity...');
       const soapNote = this.soapNoteRepository.create({
-        extractionId: extraction?.id || 0, // Will be set if extraction exists
+        extractionId: extraction?.id || null, // Use null instead of 0 when no extraction
         htmlContent,
         billingCodes: billingCodesForEntity,
       });

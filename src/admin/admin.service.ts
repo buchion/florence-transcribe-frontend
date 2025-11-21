@@ -41,6 +41,7 @@ export class AdminService {
         user_email: session.user?.email,
         patient_id: session.patientId,
         patient_name: session.patientName,
+        patient_entity_id: session.patientEntityId || null,
         status: session.status,
         started_at: session.startedAt?.toISOString(),
         ended_at: session.endedAt?.toISOString() || null,

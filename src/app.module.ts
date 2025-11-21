@@ -12,6 +12,7 @@ import { SoapModule } from './soap/soap.module';
 import { ExportModule } from './export/export.module';
 import { AdminModule } from './admin/admin.module';
 import { RealtimeModule } from './realtime/realtime.module';
+import { PatientsModule } from './patients/patients.module';
 
 @Module({
   imports: [
@@ -31,6 +32,7 @@ import { RealtimeModule } from './realtime/realtime.module';
     ExportModule,
     AdminModule,
     RealtimeModule,
+    PatientsModule,
   ],
   controllers: [AppController],
 })

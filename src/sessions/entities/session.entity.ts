@@ -9,6 +9,7 @@ import {
 } from 'typeorm';
 import { User } from '../../users/entities/user.entity';
 import { Transcript } from '../../transcripts/entities/transcript.entity';
+import { Patient } from '../../patients/entities/patient.entity';
 
 export enum SessionStatus {
   ACTIVE = 'ACTIVE',
@@ -33,6 +34,13 @@ export class Session {
 
   @Column({ name: 'patient_name', nullable: true })
   patientName: string;
+
+  @Column({ name: 'patient_entity_id', nullable: true })
+  patientEntityId: number;
+
+  @ManyToOne(() => Patient, { nullable: true })
+  @JoinColumn({ name: 'patient_entity_id' })
+  patient: Patient;
 
   @Column({
     type: 'enum',

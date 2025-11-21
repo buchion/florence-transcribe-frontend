@@ -15,12 +15,12 @@ export class SOAPNote {
   @PrimaryGeneratedColumn()
   id: number;
 
-  @Column({ name: 'extraction_id' })
-  extractionId: number;
+  @Column({ name: 'extraction_id', nullable: true })
+  extractionId: number | null;
 
-  @ManyToOne(() => ClinicalExtraction, (extraction) => extraction.soapNotes)
+  @ManyToOne(() => ClinicalExtraction, (extraction) => extraction.soapNotes, { nullable: true })
   @JoinColumn({ name: 'extraction_id' })
-  extraction: ClinicalExtraction;
+  extraction: ClinicalExtraction | null;
 
   @Column({ name: 'html_content', type: 'text' })
   htmlContent: string;

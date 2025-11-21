@@ -28,8 +28,9 @@ export class DatabaseConfig implements TypeOrmOptionsFactory {
       type: 'postgres',
       url: url.toString(),
       entities: [__dirname + '/../**/*.entity{.ts,.js}'],
-      synchronize: process.env.NODE_ENV === 'development',
-      logging: process.env.NODE_ENV === 'development',
+      // Enable synchronize in development (when NODE_ENV is not 'production')
+      synchronize: process.env.NODE_ENV !== 'production',
+      logging: process.env.NODE_ENV !== 'production',
       ...(sslConfig && { ssl: sslConfig }),
     };
     
