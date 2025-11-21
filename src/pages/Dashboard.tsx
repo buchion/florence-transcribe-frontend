@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import api from '../services/api';
 import patientsService from '../services/patients';
-import type { Patient, CreatePatientDto } from '../types/patient';
+import type { Patient, CreatePatientDto, UpdatePatientDto } from '../types/patient';
 import PatientForm from '../components/PatientForm';
 import FileUpload from '../components/FileUpload';
 
@@ -93,12 +93,16 @@ export default function Dashboard() {
     }
   };
 
-  const handleCreatePatient = async (data: CreatePatientDto) => {
+  const handleCreatePatient = async (data: CreatePatientDto | UpdatePatientDto) => {
     try {
-      await patientsService.createPatient(data);
+      // Ensure required fields are present for creation
+      if (!data.firstName || !data.lastName || !data.phoneNumber) {
+        throw new Error('First name, last name, and phone number are required');
+      }
+      await patientsService.createPatient(data as CreatePatientDto);
       setShowAddPatient(false);
       fetchPatients();
-    } catch (err: any) {
+    } catch (err: never) {
       throw err;
     }
   };
@@ -326,9 +330,9 @@ export default function Dashboard() {
                             <span className="font-medium">Session #{session.id}</span>
                             <span className={getStatusBadge(session.status)}>{session.status}</span>
                           </div>
-                          {session.startedAt && (
+                          {session.started_at && (
                             <div className="text-sm text-gray-500">
-                              {formatDate(session.startedAt)}
+                              {formatDate(session.started_at)}
                             </div>
                           )}
                         </div>
