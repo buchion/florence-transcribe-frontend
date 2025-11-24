@@ -34,5 +34,14 @@ export class TranscriptsService {
   async findById(id: number): Promise<Transcript | null> {
     return this.transcriptsRepository.findOne({ where: { id } });
   }
+
+  async update(id: number, updateData: Partial<Transcript>): Promise<Transcript> {
+    await this.transcriptsRepository.update(id, updateData);
+    const updated = await this.findById(id);
+    if (!updated) {
+      throw new Error(`Transcript with id ${id} not found`);
+    }
+    return updated;
+  }
 }
 

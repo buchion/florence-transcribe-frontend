@@ -44,6 +44,8 @@ export class RealtimeService {
       const assemblyaiClient = new AssemblyAI({ apiKey });
       const transcriber = assemblyaiClient.streaming.transcriber({
         sampleRate: 16000, // Match frontend audio sample rate
+        // Note: AssemblyAI streaming API doesn't support speakerLabels configuration
+        // We'll implement speaker detection based on turn patterns and audio characteristics
       });
 
       // Set up event handlers for transcripts
@@ -61,18 +63,20 @@ export class RealtimeService {
           // If end_of_turn is false, it's an interim/partial transcript
           const isFinal = event.end_of_turn === true;
           
-          // Extract speaker information from the event
-          // Note: AssemblyAI streaming API doesn't support speaker diarization
-          // but we check for it in case it's added in the future or available via other means
+          // Extract speaker information from the event (if available)
+          // Note: AssemblyAI streaming API doesn't natively support speaker diarization
+          // We'll use our own detection algorithm based on turn patterns
           const eventAny = event as any;
+          // Check for speaker info in various possible fields (in case it's added in future)
           const speaker = eventAny.speaker 
             || eventAny.speaker_label 
             || eventAny.speaker_id
+            || (eventAny.words && eventAny.words[0]?.speaker) // Sometimes speaker is in words array
             || undefined;
           
-          // Log event structure for debugging (only occasionally to avoid spam)
-          if (Math.random() < 0.01 && !speaker) {
-            this.logger.debug(`[RealtimeService] Turn event keys: ${Object.keys(eventAny).join(', ')}`);
+          // Log if AssemblyAI provides speaker info (should be rare with streaming API)
+          if (speaker) {
+            this.logger.debug(`[RealtimeService] AssemblyAI provided speaker: ${speaker} (final: ${isFinal})`);
           }
           
           this.handleTranscript(
@@ -117,6 +121,13 @@ export class RealtimeService {
         audioChunksReceived: 0,
         startedAt: new Date(),
         assemblyaiEnabled: true,
+        // Speaker detection state
+        speakerDetection: {
+          lastTurnTime: null,
+          lastSpeaker: null,
+          turnHistory: [], // Track recent turns for pattern detection
+          speakerPatterns: new Map<string, { count: number; avgTurnLength: number; lastSeen: number }>(), // Track speaker characteristics
+        },
       });
 
       this.logger.log(`[RealtimeService] Session ${sessionId} initialized with AssemblyAI session ${assemblyaiSessionId}`);
@@ -231,6 +242,158 @@ export class RealtimeService {
     }
   }
 
+  /**
+   * Detect speaker based on turn patterns and timing
+   * Since AssemblyAI streaming API doesn't provide speaker labels,
+   * we use heuristics to identify different speakers
+   */
+  private detectSpeaker(session: any, text: string, isFinal: boolean): string {
+    if (!session.speakerDetection) {
+      session.speakerDetection = {
+        lastTurnTime: null,
+        lastSpeaker: null,
+        turnHistory: [],
+        speakerPatterns: new Map(),
+      };
+    }
+
+    const detection = session.speakerDetection;
+    const now = Date.now();
+    const turnLength = text.length;
+    
+    // Only detect speakers on final transcripts (end of turn)
+    if (!isFinal) {
+      // For interim transcripts, return the last detected speaker
+      return detection.lastSpeaker || 'A';
+    }
+
+    // Calculate time since last turn
+    const timeSinceLastTurn = detection.lastTurnTime 
+      ? now - detection.lastTurnTime 
+      : Infinity;
+
+    // Analyze turn patterns to identify speaker
+    let detectedSpeaker: string;
+
+    // If this is the first turn, assign speaker A
+    if (!detection.lastSpeaker) {
+      detectedSpeaker = 'A';
+    } else {
+      // Use heuristics to detect speaker changes:
+      // 1. Longer pauses (>2 seconds) often indicate speaker change
+      // 2. Significant differences in turn length patterns
+      // 3. Turn order patterns (alternating vs same speaker continuing)
+      
+      const longPause = timeSinceLastTurn > 2000; // 2 seconds
+      const veryLongPause = timeSinceLastTurn > 4000; // 4 seconds
+      
+      // Get recent turn history (last 5 turns)
+      const recentTurns = detection.turnHistory.slice(-5);
+      const lastSpeakerPattern = detection.speakerPatterns.get(detection.lastSpeaker);
+      
+      // Calculate average turn length for current speaker
+      const currentSpeakerTurns = recentTurns.filter(t => t.speaker === detection.lastSpeaker);
+      const avgTurnLength = currentSpeakerTurns.length > 0
+        ? currentSpeakerTurns.reduce((sum, t) => sum + t.length, 0) / currentSpeakerTurns.length
+        : turnLength;
+      
+      // Heuristic: Very long pause likely indicates new speaker
+      if (veryLongPause) {
+        // Find next available speaker (A, B, C, D)
+        const usedSpeakers = Array.from(detection.speakerPatterns.keys()).sort();
+        const speakerOrder = ['A', 'B', 'C', 'D'];
+        const nextSpeaker = speakerOrder.find(s => !usedSpeakers.includes(s)) || 
+                           (usedSpeakers.length < 4 ? speakerOrder[usedSpeakers.length] : 'A');
+        detectedSpeaker = nextSpeaker;
+      }
+      // Heuristic: Long pause + different turn length pattern suggests new speaker
+      else if (longPause && lastSpeakerPattern) {
+        const turnLengthDiff = Math.abs(turnLength - lastSpeakerPattern.avgTurnLength);
+        const significantDiff = turnLengthDiff > lastSpeakerPattern.avgTurnLength * 0.5; // 50% difference
+        
+        if (significantDiff) {
+          // Likely different speaker
+          const usedSpeakers = Array.from(detection.speakerPatterns.keys()).sort();
+          const speakerOrder = ['A', 'B', 'C', 'D'];
+          const nextSpeaker = speakerOrder.find(s => !usedSpeakers.includes(s)) || 
+                             (usedSpeakers.length < 4 ? speakerOrder[usedSpeakers.length] : detection.lastSpeaker);
+          detectedSpeaker = nextSpeaker;
+        } else {
+          // Similar pattern, likely same speaker
+          detectedSpeaker = detection.lastSpeaker;
+        }
+      }
+      // Heuristic: Short pause + similar turn length = same speaker continuing
+      else if (!longPause && lastSpeakerPattern) {
+        const turnLengthDiff = Math.abs(turnLength - lastSpeakerPattern.avgTurnLength);
+        const similarLength = turnLengthDiff < lastSpeakerPattern.avgTurnLength * 0.3; // Within 30%
+        
+        if (similarLength) {
+          detectedSpeaker = detection.lastSpeaker;
+        } else {
+          // Different length, might be different speaker
+          // Check if we've seen this pattern before
+          const matchingPattern = Array.from(detection.speakerPatterns.entries())
+            .find(([_, pattern]) => Math.abs(turnLength - pattern.avgTurnLength) < pattern.avgTurnLength * 0.3);
+          
+          if (matchingPattern) {
+            detectedSpeaker = matchingPattern[0];
+          } else {
+            // New pattern, assign next speaker
+            const usedSpeakers = Array.from(detection.speakerPatterns.keys()).sort();
+            const speakerOrder = ['A', 'B', 'C', 'D'];
+            const nextSpeaker = speakerOrder.find(s => !usedSpeakers.includes(s)) || 
+                               (usedSpeakers.length < 4 ? speakerOrder[usedSpeakers.length] : detection.lastSpeaker);
+            detectedSpeaker = nextSpeaker;
+          }
+        }
+      }
+      // Default: alternate if we have a pause, otherwise continue with same speaker
+      else {
+        if (longPause) {
+          // Alternate between speakers
+          const speakerOrder = ['A', 'B', 'C', 'D'];
+          const currentIndex = speakerOrder.indexOf(detection.lastSpeaker);
+          const nextIndex = (currentIndex + 1) % Math.min(4, detection.speakerPatterns.size + 1);
+          detectedSpeaker = speakerOrder[nextIndex] || 'A';
+        } else {
+          detectedSpeaker = detection.lastSpeaker;
+        }
+      }
+    }
+
+    // Update speaker patterns
+    if (!detection.speakerPatterns.has(detectedSpeaker)) {
+      detection.speakerPatterns.set(detectedSpeaker, {
+        count: 1,
+        avgTurnLength: turnLength,
+        lastSeen: now,
+      });
+    } else {
+      const pattern = detection.speakerPatterns.get(detectedSpeaker);
+      pattern.count += 1;
+      // Update average turn length (exponential moving average)
+      pattern.avgTurnLength = (pattern.avgTurnLength * 0.7) + (turnLength * 0.3);
+      pattern.lastSeen = now;
+    }
+
+    // Update turn history (keep last 10 turns)
+    detection.turnHistory.push({
+      speaker: detectedSpeaker,
+      length: turnLength,
+      time: now,
+    });
+    if (detection.turnHistory.length > 10) {
+      detection.turnHistory.shift();
+    }
+
+    // Update state
+    detection.lastSpeaker = detectedSpeaker;
+    detection.lastTurnTime = now;
+
+    return detectedSpeaker;
+  }
+
   // This method would be called by AssemblyAI event handlers
   async handleTranscript(
     sessionId: number,
@@ -247,6 +410,15 @@ export class RealtimeService {
     const client = session.client as WebSocket;
     const clientId = (client as any).clientId || 'unknown';
     const transcriptType = isFinal ? 'final' : 'interim';
+
+    // If no speaker provided by AssemblyAI, use our detection algorithm
+    if (!speaker && isFinal) {
+      speaker = this.detectSpeaker(session, text, isFinal);
+      this.logger.debug(`[RealtimeService] Detected speaker: ${speaker} for session ${sessionId}`);
+    } else if (!speaker) {
+      // For interim transcripts, use last detected speaker
+      speaker = session.speakerDetection?.lastSpeaker || 'A';
+    }
 
     this.logger.debug(
       `[RealtimeService] Session ${sessionId} - ${transcriptType} transcript (${text.length} chars, speaker: ${speaker || 'N/A'}): "${text.substring(0, 50)}${text.length > 50 ? '...' : ''}"`,
