@@ -102,7 +102,7 @@ export default function Dashboard() {
       await patientsService.createPatient(data as CreatePatientDto);
       setShowAddPatient(false);
       fetchPatients();
-    } catch (err: never) {
+    } catch (err: any) {
       throw err;
     }
   };

@@ -355,7 +355,20 @@ export default function Session() {
   };
 
   useEffect(() => {
-    return () => stopRecording();
+    return () => {
+      // Cleanup: stop recording synchronously (don't await async operations in cleanup)
+      // Note: This cleanup won't upload audio - that's handled by the explicit stopRecording call
+      if (audioRecorderRef.current) {
+        // Just stop the recorder without waiting for blob or upload
+        audioRecorderRef.current.stopRecording().catch(console.error);
+        audioRecorderRef.current = null;
+      }
+      if (wsClientRef.current) {
+        wsClientRef.current.close();
+        wsClientRef.current = null;
+      }
+      setIsRecording(false);
+    };
   }, []);
 
   const handleTranscriptEdit = (updatedText: string) => {
