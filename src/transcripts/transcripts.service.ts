@@ -36,7 +36,21 @@ export class TranscriptsService {
   }
 
   async update(id: number, updateData: Partial<Transcript>): Promise<Transcript> {
-    await this.transcriptsRepository.update(id, updateData);
+    // Safety: Only allow updating specific fields to prevent accidental data loss
+    const allowedFields = ['speaker']; // Only allow updating speaker field
+    const filteredData: Partial<Transcript> = {};
+    
+    for (const field of allowedFields) {
+      if (updateData[field] !== undefined && updateData[field] !== null) {
+        filteredData[field] = updateData[field];
+      }
+    }
+    
+    if (Object.keys(filteredData).length === 0) {
+      throw new Error('No valid fields to update');
+    }
+    
+    await this.transcriptsRepository.update(id, filteredData);
     const updated = await this.findById(id);
     if (!updated) {
       throw new Error(`Transcript with id ${id} not found`);

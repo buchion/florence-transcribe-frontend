@@ -83,6 +83,7 @@ export class SessionsService {
 
   /**
    * Process audio file with AssemblyAI pre-recorded API to get accurate speaker diarization
+   * Uses webhook for async processing
    */
   async processAudioWithSpeakerDiarization(
     sessionId: number,
@@ -107,27 +108,91 @@ export class SessionsService {
     try {
       const assemblyaiClient = new AssemblyAI({ apiKey });
 
-      // Transcribe audio with speaker diarization (transcribe() automatically waits for completion)
-      this.logger.log(`Starting transcription with speaker diarization for session ${sessionId}...`);
-      const result = await assemblyaiClient.transcripts.transcribe({
+      // Get webhook URL from environment
+      const baseUrl = this.configService.get<string>('WEBHOOK_BASE_URL') || 
+                     this.configService.get<string>('BACKEND_URL') || 
+                     'http://localhost:8000';
+      const webhookUrl = `${baseUrl}/api/sessions/webhook/assemblyai?session_id=${sessionId}`;
+
+      this.logger.log(`Submitting transcription with webhook: ${webhookUrl}`);
+
+      // Submit transcription job with webhook (don't wait for completion)
+      const transcript = await assemblyaiClient.transcripts.submit({
         audio: audioBuffer,
         speaker_labels: true,
         speakers_expected: 4, // Support up to 4 speakers
         language_code: 'en', // Adjust if needed
+        webhook_url: webhookUrl,
       });
 
-      if (result.status === 'error') {
-        this.logger.error(`Transcription failed for session ${sessionId}: ${result.error}`);
-        throw new Error(`Transcription failed: ${result.error}`);
+      this.logger.log(
+        `Transcription submitted for session ${sessionId}. Transcript ID: ${transcript.id}, Status: ${transcript.status}`,
+      );
+    } catch (error) {
+      this.logger.error(`Error submitting audio for session ${sessionId}: ${error.message}`, error.stack);
+      throw error;
+    }
+  }
+
+  /**
+   * Handle webhook callback from AssemblyAI when transcription completes
+   */
+  async handleAssemblyAIWebhook(payload: any): Promise<{ status: string; message: string }> {
+    this.logger.log(`Received AssemblyAI webhook: ${JSON.stringify(payload).substring(0, 200)}`);
+
+    try {
+      // Extract session ID from webhook URL query params or payload
+      // AssemblyAI includes the webhook_url in the payload, so we can extract session_id from it
+      const webhookUrl = payload.webhook_url || '';
+      const urlMatch = webhookUrl.match(/session_id=(\d+)/);
+      const sessionId = urlMatch ? parseInt(urlMatch[1], 10) : null;
+
+      if (!sessionId) {
+        this.logger.error('Could not extract session_id from webhook payload');
+        return { status: 'error', message: 'Session ID not found in webhook' };
+      }
+
+      // Verify session exists
+      const session = await this.findById(sessionId);
+      if (!session) {
+        this.logger.error(`Session ${sessionId} from webhook not found`);
+        return { status: 'error', message: `Session ${sessionId} not found` };
+      }
+
+      // Check transcription status
+      if (payload.status === 'error') {
+        this.logger.error(`Transcription failed for session ${sessionId}: ${payload.error}`);
+        return { status: 'error', message: `Transcription failed: ${payload.error}` };
+      }
+
+      if (payload.status !== 'completed') {
+        this.logger.log(`Transcription still processing for session ${sessionId}: ${payload.status}`);
+        return { status: 'processing', message: `Transcription status: ${payload.status}` };
+      }
+
+      // Fetch the complete transcript with utterances
+      const apiKey = this.configService.get<string>('ASSEMBLYAI_API_KEY');
+      if (!apiKey) {
+        this.logger.error('AssemblyAI API key not configured');
+        return { status: 'error', message: 'API key not configured' };
+      }
+
+      const assemblyaiClient = new AssemblyAI({ apiKey });
+      const transcript = await assemblyaiClient.transcripts.get(payload.transcript_id);
+
+      if (!transcript || transcript.status !== 'completed') {
+        this.logger.error(`Failed to fetch completed transcript ${payload.transcript_id}`);
+        return { status: 'error', message: 'Failed to fetch transcript' };
       }
 
       // Update transcripts with accurate speaker labels
-      await this.updateTranscriptsWithSpeakerLabels(sessionId, result);
+      await this.updateTranscriptsWithSpeakerLabels(sessionId, transcript);
 
-      this.logger.log(`Successfully processed speaker diarization for session ${sessionId}`);
+      this.logger.log(`Successfully processed speaker diarization webhook for session ${sessionId}`);
+      return { status: 'success', message: 'Speaker labels updated successfully' };
     } catch (error) {
-      this.logger.error(`Error processing audio for session ${sessionId}: ${error.message}`, error.stack);
-      throw error;
+      this.logger.error(`Error handling webhook: ${error.message}`, error.stack);
+      return { status: 'error', message: error.message };
     }
   }
 
@@ -177,36 +242,63 @@ export class SessionsService {
 
     // Update transcripts by matching text
     let updatedCount = 0;
+    let errorCount = 0;
+    
+    // Store original count for safety check
+    const originalCount = finalTranscripts.length;
+    
     for (const transcript of finalTranscripts) {
-      const transcriptText = transcript.text?.trim().toLowerCase();
-      if (!transcriptText) continue;
+      try {
+        const transcriptText = transcript.text?.trim().toLowerCase();
+        if (!transcriptText) continue;
 
-      // Try to find matching utterance
-      // Simple approach: find utterance with highest text similarity
-      let bestMatch: { speaker: string; similarity: number } | null = null;
+        // Try to find matching utterance
+        // Simple approach: find utterance with highest text similarity
+        let bestMatch: { speaker: string; similarity: number } | null = null;
 
-      for (const [utteranceText, speaker] of utteranceMap.entries()) {
-        const similarity = this.calculateTextSimilarity(transcriptText, utteranceText);
-        if (!bestMatch || similarity > bestMatch.similarity) {
-          bestMatch = { speaker, similarity };
+        for (const [utteranceText, speaker] of utteranceMap.entries()) {
+          const similarity = this.calculateTextSimilarity(transcriptText, utteranceText);
+          if (!bestMatch || similarity > bestMatch.similarity) {
+            bestMatch = { speaker, similarity };
+          }
         }
-      }
 
-      // Update if we found a reasonable match (similarity > 0.5)
-      if (bestMatch && bestMatch.similarity > 0.5) {
-        // Map AssemblyAI speaker labels (A, B, C, D) to our format
-        // They're already in the same format, so we can use directly
-        if (transcript.speaker !== bestMatch.speaker) {
-          await this.transcriptsService.update(transcript.id, {
-            speaker: bestMatch.speaker,
-          });
-          updatedCount++;
+        // Update if we found a reasonable match (similarity > 0.3, lowered threshold)
+        if (bestMatch && bestMatch.similarity > 0.3) {
+          // Map AssemblyAI speaker labels (A, B, C, D) to our format
+          // They're already in the same format, so we can use directly
+          if (transcript.speaker !== bestMatch.speaker) {
+            await this.transcriptsService.update(transcript.id, {
+              speaker: bestMatch.speaker,
+            });
+            updatedCount++;
+          }
+        } else {
+          this.logger.debug(
+            `No good match found for transcript ${transcript.id} (best similarity: ${bestMatch?.similarity || 0})`,
+          );
         }
+      } catch (error) {
+        errorCount++;
+        this.logger.error(
+          `Failed to update transcript ${transcript.id} for session ${sessionId}: ${error.message}`,
+        );
+        // Continue with other transcripts instead of failing completely
       }
     }
 
+    // Safety check: Verify transcripts weren't deleted
+    const transcriptsAfter = await this.transcriptsService.findBySessionId(sessionId);
+    const finalAfter = transcriptsAfter.filter((t) => !t.isInterim);
+    
+    if (finalAfter.length < originalCount) {
+      this.logger.error(
+        `WARNING: Transcript count decreased from ${originalCount} to ${finalAfter.length} for session ${sessionId}`,
+      );
+    }
+
     this.logger.log(
-      `Updated ${updatedCount} out of ${finalTranscripts.length} transcripts with speaker labels for session ${sessionId}`,
+      `Updated ${updatedCount} out of ${originalCount} transcripts with speaker labels for session ${sessionId} (${errorCount} errors)`,
     );
   }
 
