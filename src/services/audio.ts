@@ -3,6 +3,7 @@ export class AudioRecorder {
   private audioContext: AudioContext | null = null;
   private stream: MediaStream | null = null;
   private sampleRate = 16000;
+  private audioChunks: Blob[] = [];
 
   async startRecording(
     onAudioData: (data: ArrayBuffer) => void
@@ -33,17 +34,17 @@ export class AudioRecorder {
       source.connect(processor);
       processor.connect(this.audioContext.destination);
 
-      // Also use MediaRecorder as fallback
+      // Use MediaRecorder to save complete audio for post-processing
       this.mediaRecorder = new MediaRecorder(this.stream, {
         mimeType: 'audio/webm',
       });
 
+      // Reset audio chunks when starting new recording
+      this.audioChunks = [];
+
       this.mediaRecorder.ondataavailable = (event) => {
         if (event.data.size > 0) {
-          // Convert to PCM16 if needed
-          event.data.arrayBuffer().then(() => {
-            // Process buffer if needed
-          });
+          this.audioChunks.push(event.data);
         }
       };
 
@@ -54,21 +55,41 @@ export class AudioRecorder {
     }
   }
 
-  stopRecording(): void {
-    if (this.mediaRecorder) {
-      this.mediaRecorder.stop();
-      this.mediaRecorder = null;
-    }
+  stopRecording(): Promise<Blob | null> {
+    return new Promise((resolve) => {
+      if (this.mediaRecorder && this.mediaRecorder.state !== 'inactive') {
+        this.mediaRecorder.onstop = () => {
+          const audioBlob = this.audioChunks.length > 0 
+            ? new Blob(this.audioChunks, { type: 'audio/webm' })
+            : null;
+          this.mediaRecorder = null;
+          this.audioChunks = [];
+          resolve(audioBlob);
+        };
+        this.mediaRecorder.stop();
+      } else {
+        resolve(null);
+      }
 
-    if (this.stream) {
-      this.stream.getTracks().forEach((track) => track.stop());
-      this.stream = null;
-    }
+      if (this.stream) {
+        this.stream.getTracks().forEach((track) => track.stop());
+        this.stream = null;
+      }
 
-    if (this.audioContext) {
-      this.audioContext.close();
-      this.audioContext = null;
-    }
+      if (this.audioContext) {
+        this.audioContext.close();
+        this.audioContext = null;
+      }
+    });
+  }
+
+  /**
+   * Get the recorded audio blob (call after stopRecording)
+   */
+  getAudioBlob(): Blob | null {
+    return this.audioChunks.length > 0 
+      ? new Blob(this.audioChunks, { type: 'audio/webm' })
+      : null;
   }
 
   private convertFloat32ToPCM16(float32Array: Float32Array): Int16Array {

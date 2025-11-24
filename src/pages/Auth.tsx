@@ -179,7 +179,7 @@ export default function Auth() {
                 </button>
               </form>
 
-              <div className="mt-4">
+              {/* <div className="mt-4">
                 <button
                   type="button"
                   onClick={() => {
@@ -190,7 +190,7 @@ export default function Auth() {
                 >
                   DEMO
                 </button>
-              </div>
+              </div> */}
             </>
           ) : (
             <>

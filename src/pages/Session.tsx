@@ -319,9 +319,11 @@ export default function Session() {
     }
   };
 
-  const stopRecording = () => {
+  const stopRecording = async () => {
+    let audioBlob: Blob | null = null;
+    
     if (audioRecorderRef.current) {
-      audioRecorderRef.current.stopRecording();
+      audioBlob = await audioRecorderRef.current.stopRecording();
       audioRecorderRef.current = null;
     }
     if (wsClientRef.current) {
@@ -329,6 +331,27 @@ export default function Session() {
       wsClientRef.current = null;
     }
     setIsRecording(false);
+
+    // Upload audio for post-processing with speaker diarization
+    if (audioBlob && sessionId) {
+      try {
+        const formData = new FormData();
+        formData.append('audio', audioBlob, `session-${sessionId}.webm`);
+        formData.append('session_id', sessionId.toString());
+
+        // Upload audio file (don't wait for processing to complete)
+        await api.post('/api/sessions/upload-audio', formData, {
+          headers: {
+            'Content-Type': 'multipart/form-data',
+          },
+        });
+        
+        console.log('Audio uploaded for post-processing with speaker diarization');
+      } catch (error) {
+        console.error('Failed to upload audio for post-processing:', error);
+        // Don't show error to user - this is a background enhancement
+      }
+    }
   };
 
   useEffect(() => {

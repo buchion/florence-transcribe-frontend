@@ -8,12 +8,12 @@ interface TranscriptFeedProps {
 
 const speakerMeta = {
   voiceA: {
-    label: 'Voice A',
+    label: 'Speaker A',
     alignment: 'justify-start',
     bubbleClass: 'bg-slate-100 text-slate-900',
   },
   voiceB: {
-    label: 'Voice B',
+    label: 'Speaker B',
     alignment: 'justify-end',
     bubbleClass: 'bg-indigo-100 text-indigo-900',
   },
