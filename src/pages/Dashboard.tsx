@@ -206,7 +206,7 @@ export default function Dashboard() {
           <div className="flex justify-between h-16">
             <div className="flex items-center">
               <h1 className="text-xl font-bold" style={{ color: '#42D7D7' }}>
-                Floor Scribe
+                Flor Scribe
               </h1>
             </div>
             <div className="flex items-center">
