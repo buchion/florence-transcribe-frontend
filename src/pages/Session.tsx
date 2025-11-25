@@ -37,6 +37,8 @@ export default function Session() {
   const [clinicalData, setClinicalData] = useState<Record<string, unknown> | null>(null);
   const [soapNote, setSoapNote] = useState<Record<string, unknown> | null>(null);
   const [activeTab, setActiveTab] = useState<'transcription' | 'clinical' | 'soap' | 'export'>('transcription');
+  const [isExtractingClinical, setIsExtractingClinical] = useState(false);
+  const [isGeneratingSOAP, setIsGeneratingSOAP] = useState(false);
   
   const navigate = useNavigate();
   const audioRecorderRef = useRef<AudioRecorder | null>(null);
@@ -378,6 +380,8 @@ export default function Session() {
 
   const handleClinicalize = async () => {
     if (!transcriptText) return;
+    setIsExtractingClinical(true);
+    setError('');
     try {
       // Only send session_id if we don't have transcript_text
       // This prevents 404 errors when transcripts haven't been saved to DB yet
@@ -397,11 +401,15 @@ export default function Session() {
     } catch (error) {
       console.error('Error clinicalizing:', error);
       setError('Failed to extract clinical data');
+    } finally {
+      setIsExtractingClinical(false);
     }
   };
 
   const handleCompose = async () => {
     if (!clinicalData) return;
+    setIsGeneratingSOAP(true);
+    setError('');
     try {
       const response = await api.post('/api/compose', {
         clinical_extraction: clinicalData,
@@ -412,6 +420,8 @@ export default function Session() {
     } catch (error) {
       console.error('Error composing SOAP note:', error);
       setError('Failed to generate SOAP note');
+    } finally {
+      setIsGeneratingSOAP(false);
     }
   };
 
@@ -717,6 +727,7 @@ export default function Session() {
                   editableText={editableTranscript}
                   onTranscriptEdit={handleTranscriptEdit}
                   onClinicalize={handleClinicalize}
+                  isExtractingClinical={isExtractingClinical}
                 />
               )}
               {activeTab === 'clinical' && (
@@ -724,6 +735,7 @@ export default function Session() {
                   <ClinicalView
                     data={clinicalData}
                     onCompose={handleCompose}
+                    isGeneratingSOAP={isGeneratingSOAP}
                   />
                 ) : (
                   <div className="text-center text-gray-500 py-12">
